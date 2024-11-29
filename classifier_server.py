@@ -1,21 +1,17 @@
 # coding: UTF-8
 import os
 import pickle as pkl
-import time
-from functools import lru_cache
 from importlib import import_module
 
 import numpy as np
 import torch
 
 from train_eval import init_network
-from flask import Flask, request, jsonify
-from flask_cors import CORS  # 解决跨域问题
 
 
 class MyClassifier:
     def __init__(self, model_name, dataset, embedding, word):
-        print("品目分类器!\n")
+        print("品目分类器!")
         self.dataset = dataset  # 数据集目录
         self.model_name = model_name  # 模型
         self.embedding = embedding  # embedding
@@ -26,15 +22,13 @@ class MyClassifier:
             for line in file:
                 s = line.strip()
                 self.labels.append(s)
-                print("%s" % s)
+                # print("%s" % s)
 
-        print("一共读取到%s个类别\n" % len(self.labels))
+        print("一共读取到%s个类别" % len(self.labels))
 
         # 创建模型配置
         x = import_module('models.' + self.model_name)
         self.config = x.Config(self.dataset, self.embedding)
-        print("预测时使用cpu\n")
-        self.config.device = torch.device('cpu')
         np.random.seed(1)
         torch.manual_seed(1)
         torch.cuda.manual_seed_all(1)
@@ -78,7 +72,6 @@ class MyClassifier:
         # pad前的长度(超过pad_size的设为pad_size)
         seq_len = torch.LongTensor([_[2] for _ in datas]).to(config.device)
         return (x, seq_len), y
-
     def my_to_tensorFastText(self, config, datas):
         # xx = [xxx[2] for xxx in datas]
         # indexx = np.argsort(xx)[::-1]
@@ -91,6 +84,7 @@ class MyClassifier:
         # pad前的长度(超过pad_size的设为pad_size)
         seq_len = torch.LongTensor([_[2] for _ in datas]).to(config.device)
         return (x, seq_len, bigram, trigram)
+
 
     def str2numpy(self, text, config):
         UNK, PAD = '<UNK>', '<PAD>'
@@ -115,7 +109,6 @@ class MyClassifier:
 
         npy = to_numpy(text, config.pad_size)
         return DatasetIterater(npy, config.batch_size, config.device)
-
     def str2numpyFastText(self, text, config):
         UNK, PAD = '<UNK>', '<PAD>'
         tokenizer = lambda x: [y for y in x]  # char-level
@@ -131,8 +124,6 @@ class MyClassifier:
             return (t2 * 14918087 * 18408749 + t1 * 14918087) % buckets
 
         def to_numpy(content, pad_size=32):
-            # FIXME 去掉空格
-            content = content.replace(" ", "")
             words_line = []
             token = tokenizer(content)
             seq_len = len(token)
@@ -160,11 +151,7 @@ class MyClassifier:
         npy = to_numpy(text, config.pad_size)
         npy = self.my_to_tensorFastText(config, npy)
         return npy
-
-    # 预测品目，设置了1000个key的缓存
-    @lru_cache(maxsize=1000)
     def classify(self, text):
-
         # FastText
         if self.model_name == 'FastText':
             data = self.str2numpyFastText(text, self.config)
@@ -174,12 +161,15 @@ class MyClassifier:
             # 获取前5个最大概率及其索引
             topk_values, topk_indices = torch.topk(probabilities, k=5, dim=1)
 
-            result = []
+            # 打印结果
             for i in range(len(topk_indices[0])):
-                result.append({'label': self.labels[topk_indices[0].cpu().numpy()[i]],
-                               'probability': round(float(topk_values[0].cpu().detach().numpy()[i]), 4)})
-            print(f"keyword:{text} result:{result}")
-            return result
+                print(
+                    f"{[self.labels[topk_indices[0].cpu().numpy()[i]]]} {topk_values[0].cpu().detach().numpy()[i]:.4f}")
+            # 概率值最大的预测结果
+            predict_result = torch.max(outputs.data, 1)[1].cpu().numpy()[0]
+            # 对应的分类
+            cls = self.labels[predict_result]
+            return cls
         # 除了FastText
         else:
             data = self.str2numpy(text, self.config)
@@ -191,58 +181,40 @@ class MyClassifier:
                 # 获取前5个最大概率及其索引
                 topk_values, topk_indices = torch.topk(probabilities, k=5, dim=1)
 
-                result = []
+                # 打印结果
                 for i in range(len(topk_indices[0])):
-                    result.append({'label': self.labels[topk_indices[0].cpu().numpy()[i]],
-                                   'probability': round(float(topk_values[0].cpu().detach().numpy()[i]), 4)})
-
-                print(f"keyword:{text} result:{result}")
-                return result
-
-
-app = Flask(__name__)
-CORS(app)  # 允许跨域访问
-
-
-@app.route('/predict', methods=['GET'])
-def predict():
-    try:
-        start_time = time.time()
-        keyword = request.args.get('keyword', '').replace(' ', '')
-
-        if not keyword:
-            return jsonify({'error': 'Keyword is missing.'}), 400
-
-        result = classifier.classify(keyword)
-        end_time = time.time()
-
-        print(f"执行时间: {end_time - start_time:.6f} 秒")
-        return jsonify(result), 200
-
-    except Exception as e:
-        print(e)
-        return jsonify({'error': str(e)}), 500
+                    print(
+                        f"{[self.labels[topk_indices[0].cpu().numpy()[i]]]} {topk_values[0].cpu().detach().numpy()[i]:.4f}")
+                # 概率值最大的预测结果
+                predict_result = torch.max(outputs.data, 1)[1].cpu().numpy()[0]
+                # 对应的分类
+                cls = self.labels[predict_result]
+                return cls
 
 
 if __name__ == '__main__':
-    model_name = 'TextRNN_Att'  # TextCNN, TextRNN, FastText, TextRCNN, TextRNN_Att, DPCNN, Transformer
+    model_name = 'TextCNN'  # TextCNN, TextRNN, FastText, TextRCNN, TextRNN_Att, DPCNN, Transformer
     embedding = 'random'
     word = False
     dataset = 'goods'  # 数据集目录
 
-    # 获取当前脚本的绝对路径
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    # 构建数据文件的完整路径
-    dataset = os.path.join(script_dir, dataset)
-
     # fastText的embedding方式不一样
     if model_name == 'FastText':
         from utils_fasttext import build_vocab, MAX_VOCAB_SIZE, DatasetIterater
-
         embedding = 'random'
     else:
         from utils import build_vocab, MAX_VOCAB_SIZE, DatasetIterater
 
     classifier = MyClassifier(model_name=model_name, dataset=dataset, embedding=embedding, word=word)
 
-    app.run(debug=False, host='0.0.0.0', port=5000)
+    while True:
+        # 输入关键字
+        keyword = input("请输入关键字（输入 q 退出）：")
+
+        # 如果输入 q，则退出循环
+        if keyword.lower() == 'q':
+            print("程序已退出。")
+            break
+
+        # 对关键字进行分词
+        print("%s 预测:%s" % (keyword, classifier.classify(keyword)))
